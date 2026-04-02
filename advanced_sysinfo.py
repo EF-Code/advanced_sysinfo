@@ -351,3 +351,14 @@ def gather_environment(args: argparse.Namespace) -> Mapping[str, Any]:
     env = {"HOME": os.environ.get("HOME"), "PATH": os.environ.get("PATH"), "SHELL": os.environ.get("SHELL")}
     env["Additional vars"] = {key: value for key, value in os.environ.items() if key not in env}
     return env
+
+def gather_users(args: argparse.Namespace) -> Mapping[str, Any]:
+    users: MutableMapping[str, Any] = {}
+    if psutil:
+        users["Active sessions"] = [
+            {"name": u.name, "terminal": u.terminal, "host": u.host, "started": datetime.datetime.fromtimestamp(u.started).isoformat()}
+            for u in psutil.users()
+        ]
+    else:
+        users["Active sessions"] = "psutil missing"
+    return users
