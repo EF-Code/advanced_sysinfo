@@ -362,3 +362,30 @@ def gather_users(args: argparse.Namespace) -> Mapping[str, Any]:
     else:
         users["Active sessions"] = "psutil missing"
     return users
+
+def gather_commands(args: argparse.Namespace) -> Mapping[str, Any]:
+    data: MutableMapping[str, Any] = {}
+    for name, cmd in [
+        ("uname", ["uname", "-a"]),
+        ("whoami", ["whoami"]),
+        ("env", ["env"] if os.name != "nt" else ["set"]),
+    ]:
+        data[name] = safe_subprocess(cmd, timeout=3)
+    return data
+
+
+def gather_virtualization(args: argparse.Namespace) -> Mapping[str, Any]:
+    info: MutableMapping[str, Any] = {}
+    markers = {
+        "/.dockerenv": "Docker",
+        "/.containerenv": "Container",
+        "/proc/sys/fs/binfmt_misc/emuinfo": "Binary emulation",
+    }
+    detected: list[str] = []
+    for path, label in markers.items():
+        if os.path.exists(path):
+            detected.append(label)
+    info["Detected"] = detected or ["none detected"]
+    virtualization = safe_subprocess(["systemd-detect-virt"])
+    info["systemd-detect-virt"] = virtualization
+    return info
