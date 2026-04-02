@@ -51,4 +51,45 @@ def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, An
         result["stderr"] = str(exc)
     return result
 
+def parse_os_release() -> Mapping[str, str]:
+    release_file = "/etc/os-release"
+    info: MutableMapping[str, str] = {}
+    if not os.path.exists(release_file):
+        return info
     try:
+        with open(release_file, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if "=" not in line:
+                    continue
+                key, _, raw_value = line.partition("=")
+                value = raw_value.strip().strip('"')
+                info[key] = value
+    except OSError:  # pragma: no cover
+        pass
+    return info
+
+
+def gather_system_overview(args: argparse.Namespace) -> Mapping[str, Any]:
+    uname = platform.uname()
+    overview: MutableMapping[str, Any] = {
+        "System": uname.system,
+        "Node": uname.node,
+        "Release": uname.release,
+        "Version": uname.version,
+        "Machine": uname.machine,
+        "Processor": uname.processor or platform.processor(),
+        "Platform": platform.platform(terse=False),
+        "Architecture": platform.architecture()[0],
+        "Python": platform.python_implementation(),
+        "Python version": platform.python_version(),
+    }
+    tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzname() or "unknown"
+    overview["Local timezone"] = tz
+    if psutil:
+        boot_time = datetime.datetime.fromtimestamp(psutil.boot_time(), datetime.timezone.utc).astimezone()
+        overview["Boot time"] = boot_time.isoformat()
+        uptime = datetime.datetime.now(datetime.timezone.utc).astimezone() - boot_time
+        overview["Uptime"] = str(uptime).split(".")[0]
+    else:
+        overview["Boot time"] = "psutil missing"
+    return overview
