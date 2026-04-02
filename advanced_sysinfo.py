@@ -408,3 +408,63 @@ SECTION_FACTORIES = OrderedDict(
         ("virtualization", ("Virtualization", gather_virtualization)),
     ]
 )
+
+
+def render_value(value: Any, indent: int = 0, indent_width: int = 2) -> list[str]:
+    spacing = " " * (indent * indent_width)
+    lines: list[str] = []
+    if isinstance(value, Mapping):
+        for key, val in value.items():
+            if isinstance(val, (Mapping, list)):
+                lines.append(f"{spacing}{key}:")
+                lines.extend(render_value(val, indent + 1, indent_width))
+            else:
+                lines.append(f"{spacing}{key}: {short_repr(val)}")
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (Mapping, list)):
+                lines.append(f"{spacing}-")
+                lines.extend(render_value(item, indent + 1, indent_width))
+            else:
+                lines.append(f"{spacing}- {short_repr(item)}")
+    else:
+        lines.append(f"{spacing}{short_repr(value)}")
+    return lines
+
+
+def short_repr(value: Any, max_width: int = 200) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, str) and len(value) > max_width:
+        return value[:max_width] + "..."
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
+    report = OrderedDict()
+    report["generated"] = datetime.datetime.now().isoformat()
+    report["sections"] = OrderedDict()
+    include_sections = {name for name in SECTION_FACTORIES}
+    if args.sections:
+        include_sections = {section.strip().lower() for section in args.sections}
+    if args.exclude_sections:
+        include_sections -= {section.strip().lower() for section in args.exclude_sections}
+    for key, (title, factory) in SECTION_FACTORIES.items():
+        if include_sections != {"all"} and key not in include_sections and title.lower() not in include_sections:
+            continue
+        report["sections"][title] = factory(args)
+    return report
+
+
+def format_text_report(report: OrderedDict[str, Any], args: argparse.Namespace) -> str:
+    lines: list[str] = []
+    lines.append(f"Generated: {report['generated']}")
+    for title, section in report["sections"].items():
+        lines.append("")
+        lines.append(title)
+        lines.append("=" * len(title))
+        lines.extend(render_value(section, indent=args.indent))
+    return "\n".join(lines)
+
