@@ -161,3 +161,71 @@ def gather_cpu_fallback(args: argparse.Namespace) -> Mapping[str, Any]:
     if lscpu:
         info["lscpu"] = safe_subprocess([lscpu])
     return info
+
+def gather_disks(args: argparse.Namespace) -> Mapping[str, Any]:
+    disks: MutableMapping[str, Any] = {}
+    if not psutil:
+        disks["Disk info"] = "psutil missing"
+        return disks
+    partitions = []
+    for partition in psutil.disk_partitions(all=False):
+        usage = psutil.disk_usage(partition.mountpoint)
+        partitions.append(
+            {
+                "Device": partition.device,
+                "Mountpoint": partition.mountpoint,
+                "Type": partition.fstype,
+                "Total": bytes2human(usage.total),
+                "Used": bytes2human(usage.used),
+                "Free": bytes2human(usage.free),
+                "Percent": f"{usage.percent:.1f}%",
+            }
+        )
+    disks["Partitions"] = partitions
+    io_counters = psutil.disk_io_counters(perdisk=False)
+    if io_counters:
+        disks["IO"] = {
+            "Read": bytes2human(io_counters.read_bytes),
+            "Write": bytes2human(io_counters.write_bytes),
+            "Read ops": io_counters.read_count,
+            "Write ops": io_counters.write_count,
+        }
+    return disks
+
+
+def gather_network(args: argparse.Namespace) -> Mapping[str, Any]:
+    network: MutableMapping[str, Any] = {}
+    if not psutil:
+        network["Network info"] = "psutil missing"
+        return network
+    interfaces = {}
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+    except (PermissionError, OSError) as exc:  
+        network["Network error"] = str(exc)
+        return network
+    for name, addr_list in addrs.items():
+        interface: MutableMapping[str, Any] = {}
+        interface["Addresses"] = [serialize_address(addr) for addr in addr_list]
+        stats_entry = stats.get(name)
+        if stats_entry:
+            interface["Up"] = stats_entry.isup
+            interface["Speed"] = f"{stats_entry.speed}Mbps" if stats_entry.speed else "unknown"
+            interface["Duplex"] = stats_entry.duplex
+            interface["MTU"] = stats_entry.mtu
+        interfaces[name] = interface
+    network["Interfaces"] = interfaces
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except (PermissionError, OSError) as exc:
+        network["Connection error"] = str(exc)
+        return network
+    summary = {
+        "Total sockets": len(connections),
+        "TCP": len([c for c in connections if c.type == socket.SOCK_STREAM]),
+        "UDP": len([c for c in connections if c.type == socket.SOCK_DGRAM]),
+    }
+    network["Connection summary"] = summary
+    network["Connection sample"] = serialize_connections(connections, limit=10)
+    return network
