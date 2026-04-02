@@ -468,3 +468,40 @@ def format_text_report(report: OrderedDict[str, Any], args: argparse.Namespace) 
         lines.extend(render_value(section, indent=args.indent))
     return "\n".join(lines)
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of human text.")
+    parser.add_argument("--output", "-o", type=str, help="Write report to a file instead of stdout.")
+    parser.add_argument(
+        "--sections",
+        nargs="*",
+        help="Sections to include (default = all). Use names from the report headers or the section keys."
+    )
+    parser.add_argument(
+        "--exclude-sections",
+        nargs="*",
+        help="Sections to omit even if --sections includes all."
+    )
+    parser.add_argument("--max-processes", type=int, default=10, help="Top N processes to list.")
+    parser.add_argument("--max-packages", type=int, default=20, help="Limit for pip packages (JSON output)."
+    )
+    parser.add_argument("--indent", type=int, default=2, help="Indent spacing for text output.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    report = build_report(args)
+    if args.json:
+        payload = json.dumps(report, indent=args.indent)
+    else:
+        payload = format_text_report(report, args)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+    else:
+        print(payload)
+
+
+if __name__ == "__main__":
+    main()
