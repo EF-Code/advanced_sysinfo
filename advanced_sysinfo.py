@@ -256,3 +256,57 @@ def serialize_connections(connections: Sequence[psutil._common.sconn], limit: in
             }
         )
     return results
+
+def gather_gpu(args: argparse.Namespace) -> Mapping[str, Any]:
+    info: MutableMapping[str, Any] = {}
+    if _gputil:
+        gpus = _gputil.getGPUs()
+        info["Count"] = len(gpus)
+        info["GPUs"] = [
+            {
+                "id": gpu.id,
+                "name": gpu.name,
+                "load": f"{gpu.load * 100:.1f}%",
+                "memory": f"{gpu.memoryTotal}MB total, {gpu.memoryUsed}MB used",
+                "temperature": f"{gpu.temperature} C",
+            }
+            for gpu in gpus
+        ]
+    else:
+        info["GPU info"] = "GPUtil not installed"
+        info["Fallback"] = gather_gpu_fallback()
+    return info
+
+
+def gather_gpu_fallback() -> Mapping[str, Any]:
+    info: MutableMapping[str, Any] = {}
+    lspci = shutil.which("lspci")
+    if lspci:
+        info["lspci"] = safe_subprocess([lspci, "-nnk"])
+    glxinfo = shutil.which("glxinfo")
+    if glxinfo:
+        info["glxinfo"] = safe_subprocess([glxinfo, "-B"])
+    if not info:
+        info["status"] = "no fallback commands available"
+    return info
+
+
+def gather_sensors(args: argparse.Namespace) -> Mapping[str, Any]:
+    readings: MutableMapping[str, Any] = {}
+    if not psutil:
+        readings["Sensors"] = "psutil missing"
+        return readings
+    temps = psutil.sensors_temperatures(fahrenheit=False)
+    if temps:
+        readings["Temperatures"] = {
+            sensor: [f"{entry.current:.1f}°C" for entry in entries]
+            for sensor, entries in temps.items()
+        }
+    fans = psutil.sensors_fans()
+    if fans:
+        readings["Fans"] = {
+            fan: [f"{entry.current} RPM" for entry in entries]
+            for fan, entries in fans.items()
+        }
+    return readings
+
