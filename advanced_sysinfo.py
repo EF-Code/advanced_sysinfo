@@ -50,19 +50,3 @@ def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, An
     except (subprocess.SubprocessError, OSError) as exc:  
         result["stderr"] = str(exc)
     return result
-def parse_os_release() -> Mapping[str, str]:
-    release_file = "/etc/os-release"
-    info: MutableMapping[str, str] = {}
-    if not os.path.exists(release_file):
-        return info
-    try:
-        with open(release_file, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                if "=" not in line:
-                    continue
-                key, _, raw_value = line.partition("=")
-                value = raw_value.strip().strip('"')
-                info[key] = value
-    except OSError:  
-        pass
-    return info
