@@ -389,3 +389,22 @@ def gather_virtualization(args: argparse.Namespace) -> Mapping[str, Any]:
     virtualization = safe_subprocess(["systemd-detect-virt"])
     info["systemd-detect-virt"] = virtualization
     return info
+
+SECTION_FACTORIES = OrderedDict(
+    [
+        ("overview", ("System overview", gather_system_overview)),
+        ("os", ("Operating system", gather_os_details)),
+        ("cpu", ("CPU", gather_cpu)),
+        ("memory", ("Memory", gather_memory)),
+        ("disks", ("Disks", gather_disks)),
+        ("network", ("Network", gather_network)),
+        ("gpu", ("GPU", gather_gpu)),
+        ("sensors", ("Sensors", gather_sensors)),
+        ("processes", ("Processes", gather_processes)),
+        ("python", ("Python and pip", gather_python)),
+        ("environment", ("Environment", gather_environment)),
+        ("users", ("Users & sessions", gather_users)),
+        ("commands", ("Command outputs", gather_commands)),
+        ("virtualization", ("Virtualization", gather_virtualization)),
+    ]
+)
