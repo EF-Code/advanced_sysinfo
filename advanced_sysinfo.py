@@ -229,3 +229,30 @@ def gather_network(args: argparse.Namespace) -> Mapping[str, Any]:
     network["Connection summary"] = summary
     network["Connection sample"] = serialize_connections(connections, limit=10)
     return network
+
+def serialize_address(addr: psutil._common.snicaddr) -> Mapping[str, Any]: 
+    data: MutableMapping[str, Any] = {"Address": addr.address}
+    if addr.netmask:
+        data["Netmask"] = addr.netmask
+    if addr.broadcast:
+        data["Broadcast"] = addr.broadcast
+    if addr.ptp:
+        data["PTP"] = addr.ptp
+    return data
+
+
+def serialize_connections(connections: Sequence[psutil._common.sconn], limit: int = 10) -> Sequence[Mapping[str, Any]]: 
+    results: list[Mapping[str, Any]] = []
+    for conn in connections[:limit]:
+        results.append(
+            {
+                "fd": conn.fd,
+                "family": conn.family.name if hasattr(conn.family, "name") else str(conn.family),
+                "type": conn.type.name if hasattr(conn.type, "name") else str(conn.type),
+                "laddr": f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else None,
+                "raddr": f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else None,
+                "status": conn.status,
+                "pid": conn.pid,
+            }
+        )
+    return results
