@@ -100,3 +100,64 @@ def gather_system_overview(args: argparse.Namespace) -> Mapping[str, Any]:
     else:
         overview["Boot time"] = "psutil missing"
     return overview
+
+
+def gather_os_details(args: argparse.Namespace) -> Mapping[str, Any]:
+    info: MutableMapping[str, Any] = {}
+    if _distro:
+        info["Name"] = _distro.name(pretty=True) or _distro.name()
+        info["Version"] = _distro.version()
+        info["Codename"] = _distro.codename()
+        info["Like"] = _distro.like()
+    else:
+        info["OS (fallback)"] = platform.system()
+        info["Release (fallback)"] = platform.release()
+        os_release = parse_os_release()
+        if os_release:
+            info["/etc/os-release"] = dict(sorted(os_release.items()))
+    return info
+
+
+def gather_memory(args: argparse.Namespace) -> Mapping[str, Any]:
+    memory: MutableMapping[str, Any] = {}
+    if psutil:
+        vm = psutil.virtual_memory()
+        memory["Virtual total"] = bytes2human(vm.total)
+        memory["Available"] = bytes2human(vm.available)
+        memory["Used"] = bytes2human(vm.used)
+        memory["Usage"] = f"{vm.percent:.1f}%"
+        swap = psutil.swap_memory()
+        memory["Swap total"] = bytes2human(swap.total)
+        memory["Swap used"] = bytes2human(swap.used)
+        memory["Swap usage"] = f"{swap.percent:.1f}%"
+    else:
+        memory["Virtual memory"] = "psutil missing"
+    return memory
+
+
+def gather_cpu(args: argparse.Namespace) -> Mapping[str, Any]:
+    cpu: MutableMapping[str, Any] = {}
+    cpu["Physical cores"] = psutil.cpu_count(logical=False) if psutil else "psutil missing"
+    cpu["Logical cores"] = psutil.cpu_count(logical=True) if psutil else "psutil missing"
+    if psutil:
+        freq = psutil.cpu_freq()
+        if freq:
+            cpu["Max frequency"] = f"{freq.max:.2f} MHz"
+            cpu["Min frequency"] = f"{freq.min:.2f} MHz"
+            cpu["Current frequency"] = f"{freq.current:.2f} MHz"
+        cpu["Usage (per core)"] = [f"{x:.1f}%" for x in psutil.cpu_percent(percpu=True, interval=0.5)]
+        cpu["Usage (total)"] = f"{psutil.cpu_percent():.1f}%"
+    else:
+        cpu["Usage"] = "psutil missing"
+        cpu.update(gather_cpu_fallback(args))
+    return cpu
+
+
+def gather_cpu_fallback(args: argparse.Namespace) -> Mapping[str, Any]:
+    info: MutableMapping[str, Any] = {}
+    info["Logical cores (os)"] = os.cpu_count()
+    info["Processor"] = platform.processor() or platform.machine()
+    lscpu = shutil.which("lscpu")
+    if lscpu:
+        info["lscpu"] = safe_subprocess([lscpu])
+    return info
