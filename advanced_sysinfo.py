@@ -38,3 +38,15 @@ def bytes2human(value: int, suffix: str = "B") -> str:
         value /= 1024.0
         abs_value = abs(value)
     return f"{value:.2f}{units[-1]}{suffix}"
+def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, Any]:
+    """Run a command safely; return stdout/stderr even if it fails."""
+
+    result: MutableMapping[str, Any] = {"command": " ".join(cmd), "stdout": "", "stderr": "", "returncode": None}
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        result["stdout"] = completed.stdout.strip()
+        result["stderr"] = completed.stderr.strip()
+        result["returncode"] = completed.returncode
+    except (subprocess.SubprocessError, OSError) as exc:  
+        result["stderr"] = str(exc)
+    return result
