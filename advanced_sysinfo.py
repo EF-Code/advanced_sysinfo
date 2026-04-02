@@ -327,3 +327,27 @@ def gather_processes(args: argparse.Namespace) -> Mapping[str, Any]:
         for proc in proc_sorted[: args.max_processes]
     ]
     return data
+
+def gather_python(args: argparse.Namespace) -> Mapping[str, Any]:
+    python: MutableMapping[str, Any] = {
+        "Executable": sys.executable,
+        "Version": sys.version.replace("\n", " "),
+        "Path": sys.path,
+        "Flags": {flag: getattr(sys.flags, flag) for flag in dir(sys.flags) if not flag.startswith("_") and isinstance(getattr(sys.flags, flag), int)},
+    }
+    pip = safe_subprocess([sys.executable, "-m", "pip", "--version"])
+    python["pip"] = pip
+    if args.max_packages:
+        packages = safe_subprocess([sys.executable, "-m", "pip", "list", "--format=json"], timeout=10)
+        if packages.get("stdout"):
+            try:
+                python["installed_packages"] = json.loads(packages["stdout"])[: args.max_packages]
+            except json.JSONDecodeError:
+                python["installed_packages"] = packages["stdout"]
+    return python
+
+
+def gather_environment(args: argparse.Namespace) -> Mapping[str, Any]:
+    env = {"HOME": os.environ.get("HOME"), "PATH": os.environ.get("PATH"), "SHELL": os.environ.get("SHELL")}
+    env["Additional vars"] = {key: value for key, value in os.environ.items() if key not in env}
+    return env
