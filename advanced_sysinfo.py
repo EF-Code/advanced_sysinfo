@@ -50,3 +50,5 @@ def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, An
     except (subprocess.SubprocessError, OSError) as exc:  
         result["stderr"] = str(exc)
     return result
+
+    try:
