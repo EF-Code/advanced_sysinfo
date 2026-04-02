@@ -310,3 +310,20 @@ def gather_sensors(args: argparse.Namespace) -> Mapping[str, Any]:
         }
     return readings
 
+def gather_processes(args: argparse.Namespace) -> Mapping[str, Any]:
+    data: MutableMapping[str, Any] = {}
+    if not psutil:
+        data["Processes"] = "psutil missing"
+        return data
+    processes = [proc for proc in psutil.process_iter(attrs=["pid", "name", "cpu_percent", "memory_percent"])]
+    proc_sorted = sorted(processes, key=lambda p: (p.info.get("cpu_percent", 0), p.info.get("memory_percent", 0)), reverse=True)
+    data["Top processes"] = [
+        {
+            "pid": proc.info["pid"],
+            "name": proc.info["name"],
+            "cpu%": f"{proc.info.get('cpu_percent', 0):.1f}",
+            "mem%": f"{proc.info.get('memory_percent', 0):.1f}",
+        }
+        for proc in proc_sorted[: args.max_processes]
+    ]
+    return data
