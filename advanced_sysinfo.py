@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Advanced cross-platform system information detector with verbose output."""
+
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -11,6 +14,7 @@ import subprocess
 import sys
 from collections import OrderedDict
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+
 try:
     import psutil
 except ImportError:  
@@ -38,6 +42,8 @@ def bytes2human(value: int, suffix: str = "B") -> str:
         value /= 1024.0
         abs_value = abs(value)
     return f"{value:.2f}{units[-1]}{suffix}"
+
+
 def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, Any]:
     """Run a command safely; return stdout/stderr even if it fails."""
 
@@ -50,6 +56,7 @@ def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, An
     except (subprocess.SubprocessError, OSError) as exc:  
         result["stderr"] = str(exc)
     return result
+
 
 def parse_os_release() -> Mapping[str, str]:
     release_file = "/etc/os-release"
