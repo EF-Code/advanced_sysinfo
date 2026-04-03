@@ -257,6 +257,95 @@ def serialize_connections(connections: Sequence[psutil._common.sconn], limit: in
         )
     return results
 
+
+def format_progress_bar(percent: float, width: int = 30) -> str:
+    """Render a simple ASCII progress bar for a percentage value."""
+    filled = int(min(max(percent, 0.0), 100.0) / 100.0 * width)
+    empty = width - filled
+    return f"[{'#' * filled}{' ' * empty}] {percent:.1f}%"
+
+
+def capture_metrics() -> Mapping[str, float]:
+    """Sample key resource metrics to surface elsewhere or compare later."""
+    metrics: MutableMapping[str, float] = {}
+    if not psutil:
+        return metrics
+    metrics["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+    vm = psutil.virtual_memory()
+    metrics["memory_percent"] = vm.percent
+    io = psutil.net_io_counters(pernic=False)
+    if io:
+        metrics["bytes_sent_mb"] = io.bytes_sent / (1024.0 * 1024.0)
+        metrics["bytes_recv_mb"] = io.bytes_recv / (1024.0 * 1024.0)
+    try:
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
+        metrics["root_disk_percent"] = disk.percent
+    except OSError:
+        pass
+    return metrics
+
+
+def gather_health_insights(args: argparse.Namespace) -> Mapping[str, Any]:
+    insights: MutableMapping[str, Any] = {}
+    metrics = getattr(args, "metric_snapshot", {})
+    if not metrics:
+        insights["Health"] = "psutil missing or metrics unavailable"
+        return insights
+    cpu = metrics.get("cpu_percent")
+    mem = metrics.get("memory_percent")
+    disk = metrics.get("root_disk_percent")
+    warnings: list[str] = []
+    if cpu is not None:
+        insights["CPU usage"] = format_progress_bar(cpu)
+        if cpu >= 85:
+            warnings.append("High CPU usage")
+    if mem is not None:
+        insights["Memory usage"] = format_progress_bar(mem)
+        if mem >= 90:
+            warnings.append("High memory pressure")
+    if disk is not None:
+        insights["Root disk usage"] = format_progress_bar(disk)
+        if disk >= 90:
+            warnings.append("Root volume nearly full")
+    score = 100.0
+    for metric in (cpu, mem, disk):
+        if metric is not None:
+            score -= min(metric, 100.0) * 0.4
+    score = max(score, 0.0)
+    insights["Health score"] = f"{score:.0f}/100"
+    insights["Status"] = "Attention needed" if warnings else "Operating normally"
+    if warnings:
+        insights["Warnings"] = warnings
+    return insights
+
+
+def gather_baseline_comparison(args: argparse.Namespace) -> Mapping[str, Any]:
+    comparison: MutableMapping[str, Any] = {}
+    baseline = getattr(args, "baseline_report", None)
+    baseline_error = getattr(args, "baseline_error", None)
+    if baseline_error:
+        comparison["error"] = baseline_error
+        return comparison
+    if not baseline:
+        comparison["status"] = "No baseline file loaded (use --baseline <path>)"
+        return comparison
+    metrics = getattr(args, "metric_snapshot", {})
+    baseline_metrics = baseline.get("metrics", {})
+    diffs: MutableMapping[str, Mapping[str, str]] = {}
+    for key, current_value in metrics.items():
+        baseline_value = baseline_metrics.get(key)
+        if isinstance(current_value, (int, float)) and isinstance(baseline_value, (int, float)):
+            delta = current_value - baseline_value
+            diffs[key] = {
+                "current": f"{current_value:.2f}",
+                "baseline": f"{baseline_value:.2f}",
+                "delta": f"{delta:+.2f}",
+            }
+    comparison["Baseline generated"] = baseline.get("generated")
+    comparison["Baseline file"] = getattr(args, "baseline", None)
+    comparison["Metric differences"] = diffs or "No comparable metrics in baseline"
+    return comparison
+
 def gather_gpu(args: argparse.Namespace) -> Mapping[str, Any]:
     info: MutableMapping[str, Any] = {}
     if _gputil:
@@ -393,6 +482,7 @@ def gather_virtualization(args: argparse.Namespace) -> Mapping[str, Any]:
 SECTION_FACTORIES = OrderedDict(
     [
         ("overview", ("System overview", gather_system_overview)),
+        ("health", ("Health snapshot", gather_health_insights)),
         ("os", ("Operating system", gather_os_details)),
         ("cpu", ("CPU", gather_cpu)),
         ("memory", ("Memory", gather_memory)),
@@ -406,6 +496,7 @@ SECTION_FACTORIES = OrderedDict(
         ("users", ("Users & sessions", gather_users)),
         ("commands", ("Command outputs", gather_commands)),
         ("virtualization", ("Virtualization", gather_virtualization)),
+        ("baseline", ("Baseline comparison", gather_baseline_comparison)),
     ]
 )
 
@@ -452,9 +543,12 @@ def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
     if args.exclude_sections:
         include_sections -= {section.strip().lower() for section in args.exclude_sections}
     for key, (title, factory) in SECTION_FACTORIES.items():
+        if key == "baseline" and not getattr(args, "baseline", None):
+            continue
         if include_sections != {"all"} and key not in include_sections and title.lower() not in include_sections:
             continue
         report["sections"][title] = factory(args)
+    report["metrics"] = getattr(args, "metric_snapshot", {})
     return report
 
 
@@ -486,16 +580,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-packages", type=int, default=20, help="Limit for pip packages (JSON output)."
     )
     parser.add_argument("--indent", type=int, default=2, help="Indent spacing for text output.")
+    parser.add_argument("--baseline", type=str, help="Compare against an existing JSON report for metric drift.")
+    parser.add_argument("--save-baseline", type=str, help="Save this report (JSON) so it can be reused as a baseline.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    args.metric_snapshot = capture_metrics()
+    args.baseline_report = None
+    args.baseline_error = None
+    if args.baseline:
+        try:
+            with open(args.baseline, "r", encoding="utf-8") as fh:
+                args.baseline_report = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            args.baseline_error = str(exc)
     report = build_report(args)
     if args.json:
         payload = json.dumps(report, indent=args.indent)
     else:
         payload = format_text_report(report, args)
+    if args.save_baseline:
+        try:
+            with open(args.save_baseline, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=args.indent)
+        except OSError as exc:
+            print(f"Failed to write baseline: {exc}", file=sys.stderr)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(payload)
