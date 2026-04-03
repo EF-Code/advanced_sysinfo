@@ -18,6 +18,8 @@ Advanced cross-platform system information detector with verbose output. This Py
 -   **Users & Sessions:** Active user sessions.
 -   **Command Outputs:** Outputs of common system commands like `uname -a`, `whoami`, `env`.
 -   **Virtualization Detection:** Detects common virtualization environments (Docker, containers, systemd-detect-virt).
+-   **Health Snapshot:** Quick “health score” with ASCII usage bars for CPU, memory, and root disk plus contextual warnings when thresholds are exceeded (powered by a fast psutil sample).
+-   **Baseline Comparison:** Load or save JSON reports to compare current metrics against a known-good baseline, surfacing deltas for CPU/memory/disk usage and flagging drift over time.
 
 ## Installation
 
@@ -52,6 +54,8 @@ python3 advanced_sysinfo.py
 -   `--max-processes <N>`: Limit the number of top processes listed (default: 10).
 -   `--max-packages <N>`: Limit the number of pip packages listed (default: 20, for JSON output).
 -   `--indent <N>`: Set the indent spacing for text output (default: 2).
+-   `--baseline <path>`: Compare the current run to a previously saved JSON report; useful for monitoring regressions after deployments.
+-   `--save-baseline <path>`: Persist this report as a future baseline.
 
 ### Examples
 
@@ -78,6 +82,21 @@ python3 advanced_sysinfo.py -o system_report.txt
 **Exclude specific sections:**
 ```bash
 python3 advanced_sysinfo.py --exclude-sections commands virtualization
+```
+
+**Health snapshot only (with health score and bars):**
+```bash
+python3 advanced_sysinfo.py --json --sections health
+```
+
+**Compare against a previous baseline:**
+```bash
+python3 advanced_sysinfo.py --json --baseline last_good.json
+```
+
+**Update the baseline after resolving issues:**
+```bash
+python3 advanced_sysinfo.py --json --save-baseline last_good.json
 ```
 
 ## Contributing
