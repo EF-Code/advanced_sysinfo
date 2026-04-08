@@ -166,6 +166,9 @@ def gather_disks(args: argparse.Namespace) -> Mapping[str, Any]:
     disks: MutableMapping[str, Any] = {}
     if not psutil:
         disks["Disk info"] = "psutil missing"
+        df = shutil.which("df")
+        if df:
+            disks["df -h"] = safe_subprocess([df, "-h"])
         return disks
     partitions = []
     for partition in psutil.disk_partitions(all=False):
