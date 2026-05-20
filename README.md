@@ -57,6 +57,7 @@ python3 advanced_sysinfo.py
 - Section names accept either internal keys such as `cpu` or visible headers such as `CPU`.
 - Unknown section names do not crash the program; they are reported in metadata or a warnings block.
 - The report metadata includes runtime capability detection and per-section timing so automation can explain partial output.
+- The report metadata also includes a compact summary with section count, warning count, and failed-section count.
 
 ### Safety controls
 

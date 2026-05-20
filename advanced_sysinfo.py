@@ -771,6 +771,11 @@ def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
         "selection_errors": [],
         "section_timings_seconds": {},
         "runtime_capabilities": detect_runtime_capabilities(),
+        "summary": {
+            "section_count": 0,
+            "selection_warning_count": 0,
+            "section_failure_count": 0,
+        },
     }
 
     selected, errors = resolve_section_selection(args.sections, args.exclude_sections)
@@ -783,6 +788,15 @@ def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
             continue
         title, factory = SECTION_FACTORIES[key]
         report["sections"][title] = gather_section(args, key, title, factory)
+    report["metadata"]["summary"] = {
+        "section_count": len(report["sections"]),
+        "selection_warning_count": len(errors),
+        "section_failure_count": sum(
+            1
+            for section in report["sections"].values()
+            if isinstance(section, Mapping) and section.get("status") == "failed"
+        ),
+    }
     report["metrics"] = getattr(args, "metric_snapshot", {})
     return report
 
@@ -954,10 +968,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     metadata = report.get("metadata", {})
     has_selection_warnings = bool(metadata.get("selection_errors"))
-    has_section_failures = any(
-        isinstance(section, Mapping) and section.get("status") == "failed"
-        for section in report.get("sections", {}).values()
-    )
+    has_section_failures = bool(metadata.get("summary", {}).get("section_failure_count"))
     if args.fail_on_warnings and (has_selection_warnings or has_section_failures):
         return 1
     return 0

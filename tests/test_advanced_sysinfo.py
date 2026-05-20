@@ -39,6 +39,8 @@ class SectionSelectionTests(unittest.TestCase):
         self.assertEqual(report["metadata"]["selection_errors"], ["Unknown sections requested: missing"])
         self.assertIn("cpu", report["metadata"]["section_timings_seconds"])
         self.assertIn("runtime_capabilities", report["metadata"])
+        self.assertEqual(report["metadata"]["summary"]["section_count"], 1)
+        self.assertEqual(report["metadata"]["summary"]["selection_warning_count"], 1)
 
 
 class HealthTests(unittest.TestCase):
