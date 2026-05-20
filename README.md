@@ -1,104 +1,136 @@
 # Advanced System Information Detector
 
-Advanced cross-platform system information detector with verbose output. This Python script provides a detailed overview of your system's hardware, operating system, and running processes, with options for various output formats and content filtering.
+`advanced_sysinfo.py` is a single-file Python CLI that collects system diagnostics and renders them as either human-readable text or JSON.
 
-## Features
+The program is designed to degrade gracefully when optional dependencies or platform-specific commands are unavailable. It now also defaults to safer output for environment data so the report is less likely to leak secrets by accident.
 
--   **System Overview:** General system information (kernel, hostname, architecture, Python version, boot time, uptime, timezone).
--   **Operating System Details:** OS name, version, codename, and `/etc/os-release` details (Linux).
--   **CPU Information:** Physical/logical cores, frequencies, and per-core/total usage.
--   **Memory Usage:** Virtual and swap memory details (total, used, available, percentage).
--   **Disk Information:** Partitions, mount points, file system types, usage, and I/O statistics.
--   **Network:** Interfaces, IP addresses, network statistics, and active internet connections.
--   **GPU Information:** Detected GPUs, load, memory, and temperature (requires `GPUtil`). Includes fallbacks using `lspci` and `glxinfo`.
--   **Sensor Readings:** Temperatures and fan speeds (requires `psutil`).
--   **Processes:** Top N processes by CPU and memory usage.
--   **Python Environment:** Python executable path, version, flags, and installed pip packages.
--   **Environment Variables:** Key environment variables (HOME, PATH, SHELL) and additional variables.
--   **Users & Sessions:** Active user sessions.
--   **Command Outputs:** Outputs of common system commands like `uname -a`, `whoami`, `env`.
--   **Virtualization Detection:** Detects common virtualization environments (Docker, containers, systemd-detect-virt).
--   **Health Snapshot:** Quick “health score” with ASCII usage bars for CPU, memory, and root disk plus contextual warnings when thresholds are exceeded (powered by a fast psutil sample).
--   **Baseline Comparison:** Load or save JSON reports to compare current metrics against a known-good baseline, surfacing deltas for CPU/memory/disk usage and flagging drift over time.
+## What It Reports
 
-## Installation
+- System overview: host, kernel, architecture, Python runtime, boot time, uptime, timezone.
+- Operating system details: platform metadata plus `/etc/os-release` when available.
+- CPU: core counts, frequencies, total usage, and per-core usage.
+- Memory: virtual and swap usage.
+- Disks: partitions, usage, and aggregate I/O, with per-mount error isolation.
+- Network: interfaces, addresses, I/O counters, and a bounded sample of active sockets.
+- GPU: NVIDIA details through `GPUtil`, with command fallbacks when available.
+- Sensors: temperature and fan readings when the current platform exposes them.
+- Processes: sampled top processes by CPU and memory usage.
+- Python environment: interpreter details and installed packages.
+- Environment: a safe summary by default, with full values only on explicit request.
+- Users and sessions.
+- Command outputs: `uname` and `whoami` by default, full `env` only on explicit request.
+- Virtualization markers.
+- Health snapshot: CPU, memory, root disk bars, warnings, and score.
+- Baseline comparison: compare current metrics to a previous JSON report.
 
-1.  **Clone the repository or download the script:**
-    ```bash
-    git clone https://github.com/ef-code/advanced_sysinfo.git
-    cd advanced_sysinfo
-    ```
+## Dependencies
 
-2.  **Install dependencies (recommended for full features):**
-    ```bash
-    pip install psutil distro GPUtil
-    ```
-    *   `psutil`: Highly recommended for detailed CPU, Memory, Disk, Network, Sensor, and Process information.
-    *   `distro`: Recommended for detailed Linux distribution information.
-    *   `GPUtil`: Recommended for NVIDIA GPU details.
+The script runs with the Python standard library alone, but several sections are improved by optional packages:
+
+```bash
+pip install psutil distro GPUtil
+```
+
+- `psutil`: CPU, memory, disk, network, processes, users, sensors, health metrics.
+- `distro`: richer Linux distribution reporting.
+- `GPUtil`: NVIDIA GPU inventory and usage.
 
 ## Usage
 
-Run the script from your terminal:
+```bash
+python3 advanced_sysinfo.py
+```
+
+### Output modes
+
+- Default: text report to stdout.
+- `--json`: emit JSON.
+- `--output FILE`: write the rendered report to a file.
+- `--save-baseline FILE`: save the full JSON report as a future baseline.
+- `--list-sections`: print all available section keys and exit.
+
+### Section selection
+
+- `--sections cpu memory network`
+- `--exclude-sections environment commands`
+- Section names accept either internal keys such as `cpu` or visible headers such as `CPU`.
+- Unknown section names do not crash the program; they are reported in metadata or a warnings block.
+
+### Safety controls
+
+- Full environment values are hidden by default.
+- Raw `env` command output is skipped by default.
+- `--include-sensitive` enables both of those behaviors explicitly.
+
+### Sampling and comparison controls
+
+- `--max-processes N`: limit process rows.
+- `--max-packages N`: limit package rows.
+- `--connection-limit N`: limit socket samples.
+- `--cpu-interval SECONDS`: CPU sampling window for aggregate CPU usage.
+- `--process-interval SECONDS`: sampling window for per-process CPU usage.
+- `--baseline FILE`: compare current metrics with a saved baseline.
+- `--baseline-threshold VALUE`: minimum absolute metric delta required before drift is flagged.
+- `--fail-on-warnings`: return a non-zero exit code when the report contains section-selection warnings or collector failures.
+
+## Examples
+
+Basic report:
 
 ```bash
 python3 advanced_sysinfo.py
 ```
 
-### Command-line Arguments
+JSON output:
 
--   `--json`: Emit JSON output instead of human-readable text.
--   `--output <file_path>`, `-o <file_path>`: Write the report to a specified file instead of stdout.
--   `--sections <section_name> [<section_name> ...]`: Specify which sections to include (e.g., `cpu memory`). Default is all sections. Use names from report headers or section keys (e.g., `os`, `network`).
--   `--exclude-sections <section_name> [<section_name> ...]`: Specify sections to omit, even if `--sections` includes them implicitly (e.g., `all`).
--   `--max-processes <N>`: Limit the number of top processes listed (default: 10).
--   `--max-packages <N>`: Limit the number of pip packages listed (default: 20, for JSON output).
--   `--indent <N>`: Set the indent spacing for text output (default: 2).
--   `--baseline <path>`: Compare the current run to a previously saved JSON report; useful for monitoring regressions after deployments.
--   `--save-baseline <path>`: Persist this report as a future baseline.
-
-### Examples
-
-**Basic Usage:**
-```bash
-python3 advanced_sysinfo.py
-```
-
-**JSON Output:**
 ```bash
 python3 advanced_sysinfo.py --json --indent 4
 ```
 
-**Specific Sections (CPU and Memory):**
+CPU and memory only:
+
 ```bash
 python3 advanced_sysinfo.py --sections cpu memory
 ```
 
-**Output to a file:**
+Health snapshot only:
+
 ```bash
-python3 advanced_sysinfo.py -o system_report.txt
+python3 advanced_sysinfo.py --sections health
 ```
 
-**Exclude specific sections:**
+Write a report to disk:
+
 ```bash
-python3 advanced_sysinfo.py --exclude-sections commands virtualization
+python3 advanced_sysinfo.py --output system_report.txt
 ```
 
-**Health snapshot only (with health score and bars):**
-```bash
-python3 advanced_sysinfo.py --json --sections health
-```
+Compare against a baseline:
 
-**Compare against a previous baseline:**
 ```bash
 python3 advanced_sysinfo.py --json --baseline last_good.json
 ```
 
-**Update the baseline after resolving issues:**
+Save a new baseline:
+
 ```bash
 python3 advanced_sysinfo.py --json --save-baseline last_good.json
 ```
 
-## Contributing
+Include full environment values intentionally:
 
-Contributions are welcome.
+```bash
+python3 advanced_sysinfo.py --sections environment commands --include-sensitive
+```
+
+## Testing
+
+Run the unit tests with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## Notes On Platform Coverage
+
+This tool works across platforms at a basic level, but some sections depend on what the host OS exposes. Linux-specific files and commands are used opportunistically rather than assumed to exist. Missing commands or unsupported APIs should result in partial section output instead of a full program failure.

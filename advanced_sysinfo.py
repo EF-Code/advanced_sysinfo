@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Advanced cross-platform system information detector with verbose output."""
+"""Advanced system information detector with safer, more robust defaults."""
 
 from __future__ import annotations
 
@@ -12,28 +12,65 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from collections import OrderedDict
-from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 try:
     import psutil
-except ImportError:  
+except ImportError:
     psutil = None
 
 try:
     import distro as _distro
-except ImportError:  
+except ImportError:
     _distro = None
 
 try:
     import GPUtil as _gputil
-except ImportError:  
+except ImportError:
     _gputil = None
 
 
-def bytes2human(value: int, suffix: str = "B") -> str:
+SectionData = Mapping[str, Any]
+SectionFactory = Callable[[argparse.Namespace], SectionData]
+SENSITIVE_ENV_MARKERS = (
+    "API_KEY",
+    "ACCESS_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASS",
+    "COOKIE",
+    "AUTH",
+    "PRIVATE",
+    "CREDENTIAL",
+)
+SENSITIVE_ENV_EXACT_KEYS = {
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "DATABASE_URL",
+    "DB_URL",
+    "GITHUB_TOKEN",
+    "OPENAI_API_KEY",
+    "SSH_AUTH_SOCK",
+}
+SAFE_ENV_KEYS = (
+    "HOME",
+    "PATH",
+    "SHELL",
+    "USER",
+    "LANG",
+    "TERM",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+)
+
+
+def bytes2human(value: float | int | None, suffix: str = "B") -> str:
     if value is None:
         return "n/a"
+    value = float(value)
     units = ["", "K", "M", "G", "T", "P", "E"]
     abs_value = abs(value)
     for unit in units:
@@ -44,18 +81,65 @@ def bytes2human(value: int, suffix: str = "B") -> str:
     return f"{value:.2f}{units[-1]}{suffix}"
 
 
-def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, Any]:
-    """Run a command safely; return stdout/stderr even if it fails."""
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
 
-    result: MutableMapping[str, Any] = {"command": " ".join(cmd), "stdout": "", "stderr": "", "returncode": None}
+
+def non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be 0 or greater")
+    return parsed
+
+
+def short_repr(value: Any, max_width: int = 200) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value)
+    return text if len(text) <= max_width else text[:max_width] + "..."
+
+
+def safe_subprocess(cmd: Sequence[str], timeout: float = 5.0) -> Mapping[str, Any]:
+    """Run a command safely and return structured output."""
+
+    result: MutableMapping[str, Any] = {
+        "command": " ".join(cmd),
+        "stdout": "",
+        "stderr": "",
+        "returncode": None,
+    }
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
         result["stdout"] = completed.stdout.strip()
         result["stderr"] = completed.stderr.strip()
         result["returncode"] = completed.returncode
-    except (subprocess.SubprocessError, OSError) as exc:  
+    except (subprocess.SubprocessError, OSError) as exc:
         result["stderr"] = str(exc)
     return result
+
+
+def safe_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[Any, str | None]:
+    try:
+        return func(*args, **kwargs), None
+    except Exception as exc:  # pragma: no cover - broad by design for resilience
+        return None, str(exc)
+
+
+def safe_disk_usage(path: str) -> tuple[Any, str | None]:
+    if not psutil:
+        return None, "psutil missing"
+    return safe_call(psutil.disk_usage, path)
 
 
 def parse_os_release() -> Mapping[str, str]:
@@ -69,14 +153,13 @@ def parse_os_release() -> Mapping[str, str]:
                 if "=" not in line:
                     continue
                 key, _, raw_value = line.partition("=")
-                value = raw_value.strip().strip('"')
-                info[key] = value
-    except OSError:  # pragma: no cover
+                info[key] = raw_value.strip().strip('"')
+    except OSError:
         pass
     return info
 
 
-def gather_system_overview(args: argparse.Namespace) -> Mapping[str, Any]:
+def gather_system_overview(args: argparse.Namespace) -> SectionData:
     uname = platform.uname()
     overview: MutableMapping[str, Any] = {
         "System": uname.system,
@@ -89,104 +172,119 @@ def gather_system_overview(args: argparse.Namespace) -> Mapping[str, Any]:
         "Architecture": platform.architecture()[0],
         "Python": platform.python_implementation(),
         "Python version": platform.python_version(),
+        "Local timezone": datetime.datetime.now(datetime.timezone.utc).astimezone().tzname() or "unknown",
     }
-    tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzname() or "unknown"
-    overview["Local timezone"] = tz
     if psutil:
         boot_time = datetime.datetime.fromtimestamp(psutil.boot_time(), datetime.timezone.utc).astimezone()
         overview["Boot time"] = boot_time.isoformat()
-        uptime = datetime.datetime.now(datetime.timezone.utc).astimezone() - boot_time
-        overview["Uptime"] = str(uptime).split(".")[0]
+        overview["Uptime"] = str(datetime.datetime.now(datetime.timezone.utc).astimezone() - boot_time).split(".")[0]
     else:
         overview["Boot time"] = "psutil missing"
+        overview["Uptime"] = "psutil missing"
     return overview
 
 
-def gather_os_details(args: argparse.Namespace) -> Mapping[str, Any]:
-    info: MutableMapping[str, Any] = {}
+def gather_os_details(args: argparse.Namespace) -> SectionData:
+    info: MutableMapping[str, Any] = {
+        "System": platform.system(),
+        "Release": platform.release(),
+        "Version": platform.version(),
+    }
     if _distro:
-        info["Name"] = _distro.name(pretty=True) or _distro.name()
-        info["Version"] = _distro.version()
-        info["Codename"] = _distro.codename()
-        info["Like"] = _distro.like()
-    else:
-        info["OS (fallback)"] = platform.system()
-        info["Release (fallback)"] = platform.release()
-        os_release = parse_os_release()
-        if os_release:
-            info["/etc/os-release"] = dict(sorted(os_release.items()))
+        info["Distribution"] = {
+            "Name": _distro.name(pretty=True) or _distro.name(),
+            "Version": _distro.version(),
+            "Codename": _distro.codename(),
+            "Like": _distro.like(),
+        }
+    os_release = parse_os_release()
+    if os_release:
+        info["/etc/os-release"] = dict(sorted(os_release.items()))
     return info
 
 
-def gather_memory(args: argparse.Namespace) -> Mapping[str, Any]:
+def gather_memory(args: argparse.Namespace) -> SectionData:
     memory: MutableMapping[str, Any] = {}
-    if psutil:
-        vm = psutil.virtual_memory()
-        memory["Virtual total"] = bytes2human(vm.total)
-        memory["Available"] = bytes2human(vm.available)
-        memory["Used"] = bytes2human(vm.used)
-        memory["Usage"] = f"{vm.percent:.1f}%"
-        swap = psutil.swap_memory()
-        memory["Swap total"] = bytes2human(swap.total)
-        memory["Swap used"] = bytes2human(swap.used)
-        memory["Swap usage"] = f"{swap.percent:.1f}%"
-    else:
-        memory["Virtual memory"] = "psutil missing"
+    if not psutil:
+        memory["status"] = "psutil missing"
+        return memory
+    vm = psutil.virtual_memory()
+    memory["Virtual total"] = bytes2human(vm.total)
+    memory["Available"] = bytes2human(vm.available)
+    memory["Used"] = bytes2human(vm.used)
+    memory["Usage"] = f"{vm.percent:.1f}%"
+    swap = psutil.swap_memory()
+    memory["Swap total"] = bytes2human(swap.total)
+    memory["Swap used"] = bytes2human(swap.used)
+    memory["Swap usage"] = f"{swap.percent:.1f}%"
     return memory
 
 
-def gather_cpu(args: argparse.Namespace) -> Mapping[str, Any]:
+def gather_cpu_fallback(args: argparse.Namespace) -> SectionData:
+    info: MutableMapping[str, Any] = {
+        "Logical cores": os.cpu_count(),
+        "Processor": platform.processor() or platform.machine(),
+    }
+    lscpu = shutil.which("lscpu")
+    if lscpu:
+        info["lscpu"] = safe_subprocess([lscpu], timeout=3)
+    return info
+
+
+def gather_cpu(args: argparse.Namespace) -> SectionData:
     cpu: MutableMapping[str, Any] = {}
-    cpu["Physical cores"] = psutil.cpu_count(logical=False) if psutil else "psutil missing"
-    cpu["Logical cores"] = psutil.cpu_count(logical=True) if psutil else "psutil missing"
-    if psutil:
-        freq = psutil.cpu_freq()
-        if freq:
-            cpu["Max frequency"] = f"{freq.max:.2f} MHz"
-            cpu["Min frequency"] = f"{freq.min:.2f} MHz"
-            cpu["Current frequency"] = f"{freq.current:.2f} MHz"
-        cpu["Usage (per core)"] = [f"{x:.1f}%" for x in psutil.cpu_percent(percpu=True, interval=0.5)]
-        cpu["Usage (total)"] = f"{psutil.cpu_percent():.1f}%"
-    else:
-        cpu["Usage"] = "psutil missing"
+    if not psutil:
+        cpu["status"] = "psutil missing"
         cpu.update(gather_cpu_fallback(args))
+        return cpu
+    cpu["Physical cores"] = psutil.cpu_count(logical=False)
+    cpu["Logical cores"] = psutil.cpu_count(logical=True)
+    freq, freq_error = safe_call(psutil.cpu_freq)
+    if freq_error:
+        cpu["Frequency error"] = freq_error
+    elif freq:
+        cpu["Max frequency"] = f"{freq.max:.2f} MHz"
+        cpu["Min frequency"] = f"{freq.min:.2f} MHz"
+        cpu["Current frequency"] = f"{freq.current:.2f} MHz"
+    cpu["Usage (per core)"] = [f"{x:.1f}%" for x in psutil.cpu_percent(percpu=True, interval=args.cpu_interval)]
+    cpu["Usage (total)"] = f"{psutil.cpu_percent(interval=None):.1f}%"
     return cpu
 
 
-def gather_cpu_fallback(args: argparse.Namespace) -> Mapping[str, Any]:
-    info: MutableMapping[str, Any] = {}
-    info["Logical cores (os)"] = os.cpu_count()
-    info["Processor"] = platform.processor() or platform.machine()
-    lscpu = shutil.which("lscpu")
-    if lscpu:
-        info["lscpu"] = safe_subprocess([lscpu])
-    return info
-
-def gather_disks(args: argparse.Namespace) -> Mapping[str, Any]:
+def gather_disks(args: argparse.Namespace) -> SectionData:
     disks: MutableMapping[str, Any] = {}
     if not psutil:
-        disks["Disk info"] = "psutil missing"
+        disks["status"] = "psutil missing"
         df = shutil.which("df")
         if df:
-            disks["df -h"] = safe_subprocess([df, "-h"])
+            disks["df -h"] = safe_subprocess([df, "-h"], timeout=3)
         return disks
+
     partitions = []
+    seen_mounts: set[str] = set()
     for partition in psutil.disk_partitions(all=False):
-        usage = psutil.disk_usage(partition.mountpoint)
-        partitions.append(
-            {
-                "Device": partition.device,
-                "Mountpoint": partition.mountpoint,
-                "Type": partition.fstype,
-                "Total": bytes2human(usage.total),
-                "Used": bytes2human(usage.used),
-                "Free": bytes2human(usage.free),
-                "Percent": f"{usage.percent:.1f}%",
-            }
-        )
+        if partition.mountpoint in seen_mounts:
+            continue
+        seen_mounts.add(partition.mountpoint)
+        usage, error = safe_disk_usage(partition.mountpoint)
+        entry: MutableMapping[str, Any] = {
+            "Device": partition.device,
+            "Mountpoint": partition.mountpoint,
+            "Type": partition.fstype,
+        }
+        if error:
+            entry["Error"] = error
+        elif usage:
+            entry["Total"] = bytes2human(usage.total)
+            entry["Used"] = bytes2human(usage.used)
+            entry["Free"] = bytes2human(usage.free)
+            entry["Percent"] = f"{usage.percent:.1f}%"
+        partitions.append(entry)
     disks["Partitions"] = partitions
-    io_counters = psutil.disk_io_counters(perdisk=False)
-    if io_counters:
+    io_counters, io_error = safe_call(psutil.disk_io_counters, perdisk=False)
+    if io_error:
+        disks["IO error"] = io_error
+    elif io_counters:
         disks["IO"] = {
             "Read": bytes2human(io_counters.read_bytes),
             "Write": bytes2human(io_counters.write_bytes),
@@ -196,64 +294,29 @@ def gather_disks(args: argparse.Namespace) -> Mapping[str, Any]:
     return disks
 
 
-def gather_network(args: argparse.Namespace) -> Mapping[str, Any]:
-    network: MutableMapping[str, Any] = {}
-    if not psutil:
-        network["Network info"] = "psutil missing"
-        return network
-    interfaces = {}
-    try:
-        stats = psutil.net_if_stats()
-        addrs = psutil.net_if_addrs()
-    except (PermissionError, OSError) as exc:  
-        network["Network error"] = str(exc)
-        return network
-    for name, addr_list in addrs.items():
-        interface: MutableMapping[str, Any] = {}
-        interface["Addresses"] = [serialize_address(addr) for addr in addr_list]
-        stats_entry = stats.get(name)
-        if stats_entry:
-            interface["Up"] = stats_entry.isup
-            interface["Speed"] = f"{stats_entry.speed}Mbps" if stats_entry.speed else "unknown"
-            interface["Duplex"] = stats_entry.duplex
-            interface["MTU"] = stats_entry.mtu
-        interfaces[name] = interface
-    network["Interfaces"] = interfaces
-    try:
-        connections = psutil.net_connections(kind="inet")
-    except (PermissionError, OSError) as exc:
-        network["Connection error"] = str(exc)
-        return network
-    summary = {
-        "Total sockets": len(connections),
-        "TCP": len([c for c in connections if c.type == socket.SOCK_STREAM]),
-        "UDP": len([c for c in connections if c.type == socket.SOCK_DGRAM]),
-    }
-    network["Connection summary"] = summary
-    network["Connection sample"] = serialize_connections(connections, limit=10)
-    return network
-
-def serialize_address(addr: psutil._common.snicaddr) -> Mapping[str, Any]: 
+def serialize_address(addr: Any) -> Mapping[str, Any]:
     data: MutableMapping[str, Any] = {"Address": addr.address}
-    if addr.netmask:
+    if getattr(addr, "netmask", None):
         data["Netmask"] = addr.netmask
-    if addr.broadcast:
+    if getattr(addr, "broadcast", None):
         data["Broadcast"] = addr.broadcast
-    if addr.ptp:
+    if getattr(addr, "ptp", None):
         data["PTP"] = addr.ptp
     return data
 
 
-def serialize_connections(connections: Sequence[psutil._common.sconn], limit: int = 10) -> Sequence[Mapping[str, Any]]: 
+def serialize_connections(connections: Sequence[Any], limit: int) -> Sequence[Mapping[str, Any]]:
     results: list[Mapping[str, Any]] = []
     for conn in connections[:limit]:
+        laddr = conn.laddr if getattr(conn, "laddr", None) else None
+        raddr = conn.raddr if getattr(conn, "raddr", None) else None
         results.append(
             {
                 "fd": conn.fd,
                 "family": conn.family.name if hasattr(conn.family, "name") else str(conn.family),
                 "type": conn.type.name if hasattr(conn.type, "name") else str(conn.type),
-                "laddr": f"{conn.laddr.ip}:{conn.laddr.port}" if conn.laddr else None,
-                "raddr": f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else None,
+                "laddr": f"{laddr.ip}:{laddr.port}" if laddr else None,
+                "raddr": f"{raddr.ip}:{raddr.port}" if raddr else None,
                 "status": conn.status,
                 "pid": conn.pid,
             }
@@ -261,38 +324,309 @@ def serialize_connections(connections: Sequence[psutil._common.sconn], limit: in
     return results
 
 
-def format_progress_bar(percent: float, width: int = 30) -> str:
-    """Render a simple ASCII progress bar for a percentage value."""
-    filled = int(min(max(percent, 0.0), 100.0) / 100.0 * width)
-    empty = width - filled
-    return f"[{'#' * filled}{' ' * empty}] {percent:.1f}%"
+def gather_network(args: argparse.Namespace) -> SectionData:
+    network: MutableMapping[str, Any] = {}
+    if not psutil:
+        network["status"] = "psutil missing"
+        return network
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+    except (PermissionError, OSError) as exc:
+        network["error"] = str(exc)
+        return network
+
+    interfaces = {}
+    for name, addr_list in addrs.items():
+        interface: MutableMapping[str, Any] = {"Addresses": [serialize_address(addr) for addr in addr_list]}
+        stats_entry = stats.get(name)
+        if stats_entry:
+            interface["Up"] = stats_entry.isup
+            interface["Speed"] = f"{stats_entry.speed}Mbps" if stats_entry.speed else "unknown"
+            interface["Duplex"] = str(stats_entry.duplex)
+            interface["MTU"] = stats_entry.mtu
+        interfaces[name] = interface
+    network["Interfaces"] = interfaces
+
+    counters, counter_error = safe_call(psutil.net_io_counters, pernic=False)
+    if counter_error:
+        network["IO error"] = counter_error
+    elif counters:
+        network["IO"] = {
+            "Bytes sent": bytes2human(counters.bytes_sent),
+            "Bytes received": bytes2human(counters.bytes_recv),
+            "Packets sent": counters.packets_sent,
+            "Packets received": counters.packets_recv,
+        }
+
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except (PermissionError, OSError) as exc:
+        network["Connection error"] = str(exc)
+        return network
+    network["Connection summary"] = {
+        "Total sockets": len(connections),
+        "TCP": sum(1 for conn in connections if conn.type == socket.SOCK_STREAM),
+        "UDP": sum(1 for conn in connections if conn.type == socket.SOCK_DGRAM),
+    }
+    network["Connection sample"] = serialize_connections(connections, limit=args.connection_limit)
+    return network
+
+
+def gather_gpu_fallback() -> SectionData:
+    info: MutableMapping[str, Any] = {}
+    lspci = shutil.which("lspci")
+    if lspci:
+        info["lspci"] = safe_subprocess([lspci, "-nnk"], timeout=5)
+    glxinfo = shutil.which("glxinfo")
+    if glxinfo:
+        info["glxinfo"] = safe_subprocess([glxinfo, "-B"], timeout=5)
+    if not info:
+        info["status"] = "No fallback commands available"
+    return info
+
+
+def gather_gpu(args: argparse.Namespace) -> SectionData:
+    info: MutableMapping[str, Any] = {}
+    if not _gputil:
+        info["status"] = "GPUtil not installed"
+        info["Fallback"] = gather_gpu_fallback()
+        return info
+    gpus, error = safe_call(_gputil.getGPUs)
+    if error:
+        info["error"] = error
+        return info
+    info["Count"] = len(gpus)
+    info["GPUs"] = [
+        {
+            "id": gpu.id,
+            "name": gpu.name,
+            "load": f"{gpu.load * 100:.1f}%",
+            "memory": f"{gpu.memoryTotal}MB total, {gpu.memoryUsed}MB used",
+            "temperature": f"{gpu.temperature} C",
+        }
+        for gpu in gpus
+    ]
+    return info
+
+
+def gather_sensors(args: argparse.Namespace) -> SectionData:
+    readings: MutableMapping[str, Any] = {}
+    if not psutil:
+        readings["status"] = "psutil missing"
+        return readings
+    temps, temp_error = safe_call(psutil.sensors_temperatures, fahrenheit=False)
+    if temp_error:
+        readings["Temperature error"] = temp_error
+    elif temps:
+        readings["Temperatures"] = {
+            sensor: [f"{entry.current:.1f}C" for entry in entries]
+            for sensor, entries in temps.items()
+        }
+    fans, fan_error = safe_call(psutil.sensors_fans)
+    if fan_error:
+        readings["Fan error"] = fan_error
+    elif fans:
+        readings["Fans"] = {
+            fan: [f"{entry.current} RPM" for entry in entries]
+            for fan, entries in fans.items()
+        }
+    if not readings:
+        readings["status"] = "No sensor data available"
+    return readings
+
+
+def sample_processes(interval: float) -> list[Mapping[str, Any]]:
+    if not psutil:
+        return []
+    processes = []
+    for proc in psutil.process_iter(attrs=["pid", "name", "memory_percent"]):
+        try:
+            proc.cpu_percent(interval=None)
+            processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if interval > 0:
+        time.sleep(interval)
+    sampled = []
+    for proc in processes:
+        try:
+            sampled.append(
+                {
+                    "pid": proc.pid,
+                    "name": proc.info.get("name") or "<unknown>",
+                    "cpu_percent": proc.cpu_percent(interval=None),
+                    "memory_percent": proc.memory_percent(),
+                }
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return sampled
+
+
+def gather_processes(args: argparse.Namespace) -> SectionData:
+    data: MutableMapping[str, Any] = {}
+    if not psutil:
+        data["status"] = "psutil missing"
+        return data
+    sampled = sample_processes(args.process_interval)
+    proc_sorted = sorted(
+        sampled,
+        key=lambda proc: (proc.get("cpu_percent", 0.0), proc.get("memory_percent", 0.0)),
+        reverse=True,
+    )
+    data["Sampling window (seconds)"] = args.process_interval
+    data["Top processes"] = [
+        {
+            "pid": proc["pid"],
+            "name": proc["name"],
+            "cpu%": f"{proc['cpu_percent']:.1f}",
+            "mem%": f"{proc['memory_percent']:.1f}",
+        }
+        for proc in proc_sorted[: args.max_processes]
+    ]
+    return data
+
+
+def gather_python(args: argparse.Namespace) -> SectionData:
+    python: MutableMapping[str, Any] = {
+        "Executable": sys.executable,
+        "Version": sys.version.replace("\n", " "),
+        "Path": sys.path,
+        "Flags": {
+            flag: getattr(sys.flags, flag)
+            for flag in dir(sys.flags)
+            if not flag.startswith("_") and isinstance(getattr(sys.flags, flag), int)
+        },
+    }
+    python["pip"] = safe_subprocess([sys.executable, "-m", "pip", "--version"], timeout=5)
+    if args.max_packages > 0:
+        packages = safe_subprocess([sys.executable, "-m", "pip", "list", "--format=json"], timeout=10)
+        if packages.get("stdout"):
+            try:
+                python["installed_packages"] = json.loads(packages["stdout"])[: args.max_packages]
+            except json.JSONDecodeError:
+                python["installed_packages"] = packages["stdout"]
+        elif packages.get("stderr"):
+            python["installed_packages_error"] = packages["stderr"]
+    return python
+
+
+def is_sensitive_env_key(key: str) -> bool:
+    upper_key = key.upper()
+    if upper_key in SENSITIVE_ENV_EXACT_KEYS:
+        return True
+    return any(marker in upper_key for marker in SENSITIVE_ENV_MARKERS)
+
+
+def gather_environment(args: argparse.Namespace) -> SectionData:
+    safe_values = {key: os.environ.get(key) for key in SAFE_ENV_KEYS if os.environ.get(key) is not None}
+    env: MutableMapping[str, Any] = {
+        "Selected vars": safe_values,
+        "Total vars": len(os.environ),
+    }
+    sensitive_keys = sorted(key for key in os.environ if is_sensitive_env_key(key))
+    env["Sensitive var names"] = sensitive_keys
+    if args.include_sensitive:
+        env["All vars"] = dict(sorted(os.environ.items()))
+    else:
+        env["Redaction"] = "Use --include-sensitive to include full environment values."
+    return env
+
+
+def gather_users(args: argparse.Namespace) -> SectionData:
+    users: MutableMapping[str, Any] = {}
+    if not psutil:
+        users["status"] = "psutil missing"
+        return users
+    sessions, error = safe_call(psutil.users)
+    if error:
+        users["error"] = error
+        return users
+    users["Active sessions"] = [
+        {
+            "name": session.name,
+            "terminal": session.terminal,
+            "host": session.host,
+            "started": datetime.datetime.fromtimestamp(session.started).isoformat(),
+        }
+        for session in sessions
+    ]
+    return users
+
+
+def gather_commands(args: argparse.Namespace) -> SectionData:
+    data: MutableMapping[str, Any] = {}
+    commands: list[tuple[str, Sequence[str]]] = [
+        ("uname", ["uname", "-a"]),
+        ("whoami", ["whoami"]),
+    ]
+    if args.include_sensitive:
+        commands.append(("env", ["env"] if os.name != "nt" else ["set"]))
+    else:
+        data["env"] = {
+            "status": "Skipped by default to avoid leaking environment values.",
+            "hint": "Re-run with --include-sensitive to capture full environment output.",
+        }
+    for name, cmd in commands:
+        data[name] = safe_subprocess(cmd, timeout=3)
+    return data
+
+
+def gather_virtualization(args: argparse.Namespace) -> SectionData:
+    info: MutableMapping[str, Any] = {}
+    markers = {
+        "/.dockerenv": "Docker",
+        "/.containerenv": "Container",
+        "/proc/sys/fs/binfmt_misc/emuinfo": "Binary emulation",
+    }
+    info["Detected"] = [label for path, label in markers.items() if os.path.exists(path)] or ["none detected"]
+    cmd = shutil.which("systemd-detect-virt")
+    if cmd:
+        info["systemd-detect-virt"] = safe_subprocess([cmd], timeout=3)
+    else:
+        info["systemd-detect-virt"] = {"status": "command not available"}
+    return info
 
 
 def capture_metrics() -> Mapping[str, float]:
-    """Sample key resource metrics to surface elsewhere or compare later."""
     metrics: MutableMapping[str, float] = {}
     if not psutil:
         return metrics
     metrics["cpu_percent"] = psutil.cpu_percent(interval=0.1)
     vm = psutil.virtual_memory()
     metrics["memory_percent"] = vm.percent
-    io = psutil.net_io_counters(pernic=False)
-    if io:
+    io, io_error = safe_call(psutil.net_io_counters, pernic=False)
+    if not io_error and io:
         metrics["bytes_sent_mb"] = io.bytes_sent / (1024.0 * 1024.0)
         metrics["bytes_recv_mb"] = io.bytes_recv / (1024.0 * 1024.0)
-    try:
-        disk = psutil.disk_usage(os.path.abspath(os.sep))
+    disk, disk_error = safe_disk_usage(os.path.abspath(os.sep))
+    if not disk_error and disk:
         metrics["root_disk_percent"] = disk.percent
-    except OSError:
-        pass
     return metrics
 
 
-def gather_health_insights(args: argparse.Namespace) -> Mapping[str, Any]:
+def compute_health_score(cpu: float | None, memory: float | None, disk: float | None) -> int:
+    score = 100.0
+    if cpu is not None:
+        score -= max(cpu - 60.0, 0.0) * 0.8
+    if memory is not None:
+        score -= max(memory - 70.0, 0.0) * 1.0
+    if disk is not None:
+        score -= max(disk - 75.0, 0.0) * 1.2
+    return max(0, min(100, int(round(score))))
+
+
+def format_progress_bar(percent: float, width: int = 30) -> str:
+    filled = int(min(max(percent, 0.0), 100.0) / 100.0 * width)
+    return f"[{'#' * filled}{' ' * (width - filled)}] {percent:.1f}%"
+
+
+def gather_health_insights(args: argparse.Namespace) -> SectionData:
     insights: MutableMapping[str, Any] = {}
     metrics = getattr(args, "metric_snapshot", {})
     if not metrics:
-        insights["Health"] = "psutil missing or metrics unavailable"
+        insights["status"] = "psutil missing or metrics unavailable"
         return insights
     cpu = metrics.get("cpu_percent")
     mem = metrics.get("memory_percent")
@@ -310,19 +644,15 @@ def gather_health_insights(args: argparse.Namespace) -> Mapping[str, Any]:
         insights["Root disk usage"] = format_progress_bar(disk)
         if disk >= 90:
             warnings.append("Root volume nearly full")
-    score = 100.0
-    for metric in (cpu, mem, disk):
-        if metric is not None:
-            score -= min(metric, 100.0) * 0.4
-    score = max(score, 0.0)
-    insights["Health score"] = f"{score:.0f}/100"
+    score = compute_health_score(cpu, mem, disk)
+    insights["Health score"] = f"{score}/100"
     insights["Status"] = "Attention needed" if warnings else "Operating normally"
     if warnings:
         insights["Warnings"] = warnings
     return insights
 
 
-def gather_baseline_comparison(args: argparse.Namespace) -> Mapping[str, Any]:
+def gather_baseline_comparison(args: argparse.Namespace) -> SectionData:
     comparison: MutableMapping[str, Any] = {}
     baseline = getattr(args, "baseline_report", None)
     baseline_error = getattr(args, "baseline_error", None)
@@ -332,157 +662,33 @@ def gather_baseline_comparison(args: argparse.Namespace) -> Mapping[str, Any]:
     if not baseline:
         comparison["status"] = "No baseline file loaded (use --baseline <path>)"
         return comparison
+
     metrics = getattr(args, "metric_snapshot", {})
     baseline_metrics = baseline.get("metrics", {})
     diffs: MutableMapping[str, Mapping[str, str]] = {}
+    drifted: list[str] = []
     for key, current_value in metrics.items():
         baseline_value = baseline_metrics.get(key)
-        if isinstance(current_value, (int, float)) and isinstance(baseline_value, (int, float)):
-            delta = current_value - baseline_value
-            diffs[key] = {
-                "current": f"{current_value:.2f}",
-                "baseline": f"{baseline_value:.2f}",
-                "delta": f"{delta:+.2f}",
-            }
+        if not isinstance(current_value, (int, float)) or not isinstance(baseline_value, (int, float)):
+            continue
+        delta = current_value - baseline_value
+        diffs[key] = {
+            "current": f"{current_value:.2f}",
+            "baseline": f"{baseline_value:.2f}",
+            "delta": f"{delta:+.2f}",
+        }
+        if abs(delta) >= args.baseline_threshold:
+            drifted.append(key)
+
     comparison["Baseline generated"] = baseline.get("generated")
     comparison["Baseline file"] = getattr(args, "baseline", None)
+    comparison["Threshold"] = f"{args.baseline_threshold:.2f}"
     comparison["Metric differences"] = diffs or "No comparable metrics in baseline"
+    comparison["Drift detected"] = drifted or ["none"]
     return comparison
 
-def gather_gpu(args: argparse.Namespace) -> Mapping[str, Any]:
-    info: MutableMapping[str, Any] = {}
-    if _gputil:
-        gpus = _gputil.getGPUs()
-        info["Count"] = len(gpus)
-        info["GPUs"] = [
-            {
-                "id": gpu.id,
-                "name": gpu.name,
-                "load": f"{gpu.load * 100:.1f}%",
-                "memory": f"{gpu.memoryTotal}MB total, {gpu.memoryUsed}MB used",
-                "temperature": f"{gpu.temperature} C",
-            }
-            for gpu in gpus
-        ]
-    else:
-        info["GPU info"] = "GPUtil not installed"
-        info["Fallback"] = gather_gpu_fallback()
-    return info
 
-
-def gather_gpu_fallback() -> Mapping[str, Any]:
-    info: MutableMapping[str, Any] = {}
-    lspci = shutil.which("lspci")
-    if lspci:
-        info["lspci"] = safe_subprocess([lspci, "-nnk"])
-    glxinfo = shutil.which("glxinfo")
-    if glxinfo:
-        info["glxinfo"] = safe_subprocess([glxinfo, "-B"])
-    if not info:
-        info["status"] = "no fallback commands available"
-    return info
-
-
-def gather_sensors(args: argparse.Namespace) -> Mapping[str, Any]:
-    readings: MutableMapping[str, Any] = {}
-    if not psutil:
-        readings["Sensors"] = "psutil missing"
-        return readings
-    temps = psutil.sensors_temperatures(fahrenheit=False)
-    if temps:
-        readings["Temperatures"] = {
-            sensor: [f"{entry.current:.1f}°C" for entry in entries]
-            for sensor, entries in temps.items()
-        }
-    fans = psutil.sensors_fans()
-    if fans:
-        readings["Fans"] = {
-            fan: [f"{entry.current} RPM" for entry in entries]
-            for fan, entries in fans.items()
-        }
-    return readings
-
-def gather_processes(args: argparse.Namespace) -> Mapping[str, Any]:
-    data: MutableMapping[str, Any] = {}
-    if not psutil:
-        data["Processes"] = "psutil missing"
-        return data
-    processes = [proc for proc in psutil.process_iter(attrs=["pid", "name", "cpu_percent", "memory_percent"])]
-    proc_sorted = sorted(processes, key=lambda p: (p.info.get("cpu_percent", 0), p.info.get("memory_percent", 0)), reverse=True)
-    data["Top processes"] = [
-        {
-            "pid": proc.info["pid"],
-            "name": proc.info["name"],
-            "cpu%": f"{proc.info.get('cpu_percent', 0):.1f}",
-            "mem%": f"{proc.info.get('memory_percent', 0):.1f}",
-        }
-        for proc in proc_sorted[: args.max_processes]
-    ]
-    return data
-
-def gather_python(args: argparse.Namespace) -> Mapping[str, Any]:
-    python: MutableMapping[str, Any] = {
-        "Executable": sys.executable,
-        "Version": sys.version.replace("\n", " "),
-        "Path": sys.path,
-        "Flags": {flag: getattr(sys.flags, flag) for flag in dir(sys.flags) if not flag.startswith("_") and isinstance(getattr(sys.flags, flag), int)},
-    }
-    pip = safe_subprocess([sys.executable, "-m", "pip", "--version"])
-    python["pip"] = pip
-    if args.max_packages:
-        packages = safe_subprocess([sys.executable, "-m", "pip", "list", "--format=json"], timeout=10)
-        if packages.get("stdout"):
-            try:
-                python["installed_packages"] = json.loads(packages["stdout"])[: args.max_packages]
-            except json.JSONDecodeError:
-                python["installed_packages"] = packages["stdout"]
-    return python
-
-
-def gather_environment(args: argparse.Namespace) -> Mapping[str, Any]:
-    env = {"HOME": os.environ.get("HOME"), "PATH": os.environ.get("PATH"), "SHELL": os.environ.get("SHELL")}
-    env["Additional vars"] = {key: value for key, value in os.environ.items() if key not in env}
-    return env
-
-def gather_users(args: argparse.Namespace) -> Mapping[str, Any]:
-    users: MutableMapping[str, Any] = {}
-    if psutil:
-        users["Active sessions"] = [
-            {"name": u.name, "terminal": u.terminal, "host": u.host, "started": datetime.datetime.fromtimestamp(u.started).isoformat()}
-            for u in psutil.users()
-        ]
-    else:
-        users["Active sessions"] = "psutil missing"
-    return users
-
-def gather_commands(args: argparse.Namespace) -> Mapping[str, Any]:
-    data: MutableMapping[str, Any] = {}
-    for name, cmd in [
-        ("uname", ["uname", "-a"]),
-        ("whoami", ["whoami"]),
-        ("env", ["env"] if os.name != "nt" else ["set"]),
-    ]:
-        data[name] = safe_subprocess(cmd, timeout=3)
-    return data
-
-
-def gather_virtualization(args: argparse.Namespace) -> Mapping[str, Any]:
-    info: MutableMapping[str, Any] = {}
-    markers = {
-        "/.dockerenv": "Docker",
-        "/.containerenv": "Container",
-        "/proc/sys/fs/binfmt_misc/emuinfo": "Binary emulation",
-    }
-    detected: list[str] = []
-    for path, label in markers.items():
-        if os.path.exists(path):
-            detected.append(label)
-    info["Detected"] = detected or ["none detected"]
-    virtualization = safe_subprocess(["systemd-detect-virt"])
-    info["systemd-detect-virt"] = virtualization
-    return info
-
-SECTION_FACTORIES = OrderedDict(
+SECTION_FACTORIES: "OrderedDict[str, tuple[str, SectionFactory]]" = OrderedDict(
     [
         ("overview", ("System overview", gather_system_overview)),
         ("health", ("Health snapshot", gather_health_insights)),
@@ -502,6 +708,82 @@ SECTION_FACTORIES = OrderedDict(
         ("baseline", ("Baseline comparison", gather_baseline_comparison)),
     ]
 )
+SECTION_TITLE_LOOKUP = {title.lower(): key for key, (title, _) in SECTION_FACTORIES.items()}
+
+
+def normalize_section_name(section: str) -> str:
+    key = section.strip().lower()
+    return SECTION_TITLE_LOOKUP.get(key, key)
+
+
+def resolve_section_selection(
+    requested: Iterable[str] | None,
+    excluded: Iterable[str] | None,
+) -> tuple[list[str], list[str]]:
+    valid_keys = set(SECTION_FACTORIES)
+    selected = list(SECTION_FACTORIES.keys())
+    errors: list[str] = []
+
+    if requested:
+        normalized = {normalize_section_name(section) for section in requested if section.strip()}
+        if normalized and "all" not in normalized:
+            selected = [key for key in SECTION_FACTORIES if key in normalized]
+            unknown = sorted(normalized - valid_keys)
+            if unknown:
+                errors.append(f"Unknown sections requested: {', '.join(unknown)}")
+
+    if excluded:
+        normalized_excluded = {normalize_section_name(section) for section in excluded if section.strip()}
+        unknown = sorted(normalized_excluded - valid_keys - {"all"})
+        if unknown:
+            errors.append(f"Unknown sections excluded: {', '.join(unknown)}")
+        if "all" in normalized_excluded:
+            selected = []
+        else:
+            selected = [key for key in selected if key not in normalized_excluded]
+
+    return selected, errors
+
+
+def gather_section(args: argparse.Namespace, key: str, title: str, factory: SectionFactory) -> SectionData:
+    started = time.perf_counter()
+    try:
+        result = factory(args)
+    except Exception as exc:  # pragma: no cover - broad by design for resilience
+        result = {
+            "error": str(exc),
+            "section": key,
+            "status": "failed",
+        }
+    timings = getattr(args, "section_timings", None)
+    if isinstance(timings, MutableMapping):
+        timings[key] = round(time.perf_counter() - started, 4)
+    return result
+
+
+def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
+    report: "OrderedDict[str, Any]" = OrderedDict()
+    report["generated"] = datetime.datetime.now().isoformat()
+    report["sections"] = OrderedDict()
+    report["metadata"] = {
+        "sensitive_mode": args.include_sensitive,
+        "selected_sections": [],
+        "selection_errors": [],
+        "section_timings_seconds": {},
+    }
+
+    selected, errors = resolve_section_selection(args.sections, args.exclude_sections)
+    report["metadata"]["selected_sections"] = selected
+    report["metadata"]["selection_errors"] = errors
+
+    args.section_timings = report["metadata"]["section_timings_seconds"]
+    for key in selected:
+        if key == "baseline" and not getattr(args, "baseline", None):
+            continue
+        title, factory = SECTION_FACTORIES[key]
+        report["sections"][title] = gather_section(args, key, title, factory)
+    report["metrics"] = getattr(args, "metric_snapshot", {})
+    return report
 
 
 def render_value(value: Any, indent: int = 0, indent_width: int = 2) -> list[str]:
@@ -526,38 +808,14 @@ def render_value(value: Any, indent: int = 0, indent_width: int = 2) -> list[str
     return lines
 
 
-def short_repr(value: Any, max_width: int = 200) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, str) and len(value) > max_width:
-        return value[:max_width] + "..."
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    return str(value)
-
-
-def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
-    report = OrderedDict()
-    report["generated"] = datetime.datetime.now().isoformat()
-    report["sections"] = OrderedDict()
-    include_sections = {name for name in SECTION_FACTORIES}
-    if args.sections:
-        include_sections = {section.strip().lower() for section in args.sections}
-    if args.exclude_sections:
-        include_sections -= {section.strip().lower() for section in args.exclude_sections}
-    for key, (title, factory) in SECTION_FACTORIES.items():
-        if key == "baseline" and not getattr(args, "baseline", None):
-            continue
-        if include_sections != {"all"} and key not in include_sections and title.lower() not in include_sections:
-            continue
-        report["sections"][title] = factory(args)
-    report["metrics"] = getattr(args, "metric_snapshot", {})
-    return report
-
-
 def format_text_report(report: OrderedDict[str, Any], args: argparse.Namespace) -> str:
-    lines: list[str] = []
-    lines.append(f"Generated: {report['generated']}")
+    lines = [f"Generated: {report['generated']}"]
+    metadata = report.get("metadata", {})
+    if metadata.get("selection_errors"):
+        lines.append("")
+        lines.append("Warnings")
+        lines.append("========")
+        lines.extend(render_value({"Selection errors": metadata["selection_errors"]}, indent=args.indent))
     for title, section in report["sections"].items():
         lines.append("")
         lines.append(title)
@@ -565,57 +823,126 @@ def format_text_report(report: OrderedDict[str, Any], args: argparse.Namespace) 
         lines.extend(render_value(section, indent=args.indent))
     return "\n".join(lines)
 
-def parse_args() -> argparse.Namespace:
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="Emit JSON instead of human text.")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text.")
+    parser.add_argument("--list-sections", action="store_true", help="List available section keys and exit.")
     parser.add_argument("--output", "-o", type=str, help="Write report to a file instead of stdout.")
     parser.add_argument(
         "--sections",
         nargs="*",
-        help="Sections to include (default = all). Use names from the report headers or the section keys."
+        help="Sections to include (default = all). Use section keys or report headers.",
     )
     parser.add_argument(
         "--exclude-sections",
         nargs="*",
-        help="Sections to omit even if --sections includes all."
+        help="Sections to omit after inclusion is resolved.",
     )
-    parser.add_argument("--max-processes", type=int, default=10, help="Top N processes to list.")
-    parser.add_argument("--max-packages", type=int, default=20, help="Limit for pip packages (JSON output)."
+    parser.add_argument("--max-processes", type=positive_int, default=10, help="Top N processes to list.")
+    parser.add_argument("--max-packages", type=int, default=20, help="Limit installed package output.")
+    parser.add_argument("--indent", type=positive_int, default=2, help="Indent width for text or JSON output.")
+    parser.add_argument("--baseline", type=str, help="Compare against an existing JSON report for drift.")
+    parser.add_argument("--save-baseline", type=str, help="Save this report as a reusable JSON baseline.")
+    parser.add_argument(
+        "--baseline-threshold",
+        type=non_negative_float,
+        default=10.0,
+        help="Minimum absolute metric delta required before baseline drift is flagged.",
     )
-    parser.add_argument("--indent", type=int, default=2, help="Indent spacing for text output.")
-    parser.add_argument("--baseline", type=str, help="Compare against an existing JSON report for metric drift.")
-    parser.add_argument("--save-baseline", type=str, help="Save this report (JSON) so it can be reused as a baseline.")
-    return parser.parse_args()
+    parser.add_argument(
+        "--include-sensitive",
+        action="store_true",
+        help="Include full environment values and raw env command output.",
+    )
+    parser.add_argument(
+        "--connection-limit",
+        type=positive_int,
+        default=10,
+        help="Maximum number of network connections to sample.",
+    )
+    parser.add_argument(
+        "--cpu-interval",
+        type=non_negative_float,
+        default=0.5,
+        help="Sampling interval for aggregate CPU usage.",
+    )
+    parser.add_argument(
+        "--process-interval",
+        type=non_negative_float,
+        default=0.2,
+        help="Sampling window for per-process CPU usage.",
+    )
+    parser.add_argument(
+        "--fail-on-warnings",
+        action="store_true",
+        help="Exit non-zero when section selection warnings or section failures are present.",
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def load_baseline(path: str) -> tuple[Mapping[str, Any] | None, str | None]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+    if not isinstance(data, Mapping):
+        return None, "Baseline file must contain a JSON object."
+    return data, None
+
+
+def write_text_file(path: str, payload: str) -> str | None:
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.max_packages < 0:
+        print("--max-packages must be 0 or greater", file=sys.stderr)
+        return 2
+    if args.list_sections:
+        for key, (title, _) in SECTION_FACTORIES.items():
+            print(f"{key}\t{title}")
+        return 0
     args.metric_snapshot = capture_metrics()
     args.baseline_report = None
     args.baseline_error = None
     if args.baseline:
-        try:
-            with open(args.baseline, "r", encoding="utf-8") as fh:
-                args.baseline_report = json.load(fh)
-        except (OSError, json.JSONDecodeError) as exc:
-            args.baseline_error = str(exc)
+        args.baseline_report, args.baseline_error = load_baseline(args.baseline)
+
     report = build_report(args)
-    if args.json:
-        payload = json.dumps(report, indent=args.indent)
-    else:
-        payload = format_text_report(report, args)
+    payload = json.dumps(report, indent=args.indent) if args.json else format_text_report(report, args)
+
     if args.save_baseline:
-        try:
-            with open(args.save_baseline, "w", encoding="utf-8") as fh:
-                json.dump(report, fh, indent=args.indent)
-        except OSError as exc:
-            print(f"Failed to write baseline: {exc}", file=sys.stderr)
+        baseline_error = write_text_file(args.save_baseline, json.dumps(report, indent=args.indent))
+        if baseline_error:
+            print(f"Failed to write baseline: {baseline_error}", file=sys.stderr)
+            return 1
+
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as fh:
-            fh.write(payload)
+        output_error = write_text_file(args.output, payload)
+        if output_error:
+            print(f"Failed to write output: {output_error}", file=sys.stderr)
+            return 1
     else:
         print(payload)
 
+    metadata = report.get("metadata", {})
+    has_selection_warnings = bool(metadata.get("selection_errors"))
+    has_section_failures = any(
+        isinstance(section, Mapping) and section.get("status") == "failed"
+        for section in report.get("sections", {}).values()
+    )
+    if args.fail_on_warnings and (has_selection_warnings or has_section_failures):
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
