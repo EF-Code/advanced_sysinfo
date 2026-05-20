@@ -770,6 +770,7 @@ def build_report(args: argparse.Namespace) -> OrderedDict[str, Any]:
         "selected_sections": [],
         "selection_errors": [],
         "section_timings_seconds": {},
+        "runtime_capabilities": detect_runtime_capabilities(),
     }
 
     selected, errors = resolve_section_selection(args.sections, args.exclude_sections)
@@ -890,6 +891,21 @@ def load_baseline(path: str) -> tuple[Mapping[str, Any] | None, str | None]:
     if not isinstance(data, Mapping):
         return None, "Baseline file must contain a JSON object."
     return data, None
+
+
+def detect_runtime_capabilities() -> Mapping[str, Any]:
+    return {
+        "psutil": psutil is not None,
+        "distro": _distro is not None,
+        "GPUtil": _gputil is not None,
+        "commands": {
+            "systemd-detect-virt": shutil.which("systemd-detect-virt") is not None,
+            "lscpu": shutil.which("lscpu") is not None,
+            "lspci": shutil.which("lspci") is not None,
+            "glxinfo": shutil.which("glxinfo") is not None,
+            "df": shutil.which("df") is not None,
+        },
+    }
 
 
 def write_text_file(path: str, payload: str) -> str | None:

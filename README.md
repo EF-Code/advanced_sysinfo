@@ -55,6 +55,7 @@ python3 advanced_sysinfo.py
 - `--exclude-sections environment commands`
 - Section names accept either internal keys such as `cpu` or visible headers such as `CPU`.
 - Unknown section names do not crash the program; they are reported in metadata or a warnings block.
+- The report metadata includes runtime capability detection and per-section timing so automation can explain partial output.
 
 ### Safety controls
 
