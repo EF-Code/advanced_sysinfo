@@ -910,6 +910,9 @@ def detect_runtime_capabilities() -> Mapping[str, Any]:
 
 def write_text_file(path: str, payload: str) -> str | None:
     try:
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(payload)
     except OSError as exc:

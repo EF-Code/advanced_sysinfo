@@ -48,6 +48,7 @@ python3 advanced_sysinfo.py
 - `--output FILE`: write the rendered report to a file.
 - `--save-baseline FILE`: save the full JSON report as a future baseline.
 - `--list-sections`: print all available section keys and exit.
+- Output paths and baseline paths can point into directories that do not exist yet; the CLI creates them.
 
 ### Section selection
 

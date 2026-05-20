@@ -110,6 +110,14 @@ class BaselineTests(unittest.TestCase):
         self.assertIsNone(baseline)
         self.assertEqual(error, "Baseline file must contain a JSON object.")
 
+    def test_write_text_file_creates_parent_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "nested", "report.json")
+            error = advanced_sysinfo.write_text_file(target, '{"ok": true}')
+            self.assertIsNone(error)
+            with open(target, "r", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), '{"ok": true}')
+
 
 class CommandTests(unittest.TestCase):
     def test_commands_skip_env_without_sensitive_mode(self) -> None:
